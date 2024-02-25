@@ -30,7 +30,7 @@ fn main() {
 struct Player {
     jump_cooldown: Timer,
     shot_cooldown: Timer,
-    shot_limit: i32,
+    shot_limit: u32,
     position: Vec2,
 }
 
