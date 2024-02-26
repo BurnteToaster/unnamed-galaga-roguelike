@@ -2,6 +2,7 @@ use bevy::render::camera::Camera;
 use bevy::window::Window;
 use bevy::prelude::*;
 use bevy::ecs::event::ManualEventReader;
+use bevy::input::mouse::MouseWheel;
 use rand::Rng;
 use bevy::render::RenderPlugin;
 use bevy::render::settings::{RenderCreation, WgpuSettings, Backends};
@@ -22,13 +23,14 @@ fn main() {
         .add_systems(Update, update_level_info)
         .add_systems(Update, spawn_enemies)
         .add_systems(Update, move_enemies)
+        .add_systems(Update, update_time_scale)
         //.add_systems(Update, enemy_collision)
         .run();
 }
 
 #[derive(Component)]
 struct Player {
-    jump_cooldown: Timer,
+    movement_speed: f32,
     shot_cooldown: Timer,
     shot_limit: u32,
     position: Vec2,
@@ -36,8 +38,9 @@ struct Player {
 
 #[derive(Component)]
 struct Enemy {
+    movement_speed: f32,
     direction: Vec3,
-    health: u32,
+    health: i32,
 }
 
 #[derive(Component)]
@@ -61,36 +64,34 @@ struct EnemiesLeft(u32);
 #[derive(Resource)]
 struct EnemySpawnTimer(Timer);
 
-const PADDLE_SIZE: Vec3 = Vec3::new(40.0, 40.0, 0.0);
-const PADDLE_COLOR: Color = Color::rgb(0.0, 0.0, 0.0);
-const PLAYER_SPEED: f32 = 100.0;
+#[derive(Resource)]
+struct TimeScale(f32);
+
+const PADDLE_SIZE: Vec3 = Vec3::new(0.15, 0.20, 0.0);
 const BULLET_SIZE: Vec3 = Vec3::new(10.0, 25.0, 0.0);
 const BULLET_COLOR: Color = Color::rgb(1.0, 0.0, 0.0);
 const BULLET_SPEED: f32 = 500.0;
 const ENEMY_SIZE: Vec3 = Vec3::new(35.0,35.0, 0.0);
 const ENEMY_COLOR: Color = Color::rgb(1.0, 0.0, 0.75);
-const ENEMY_SPEED: f32 = 75.0;
 
 fn setup_game(
     mut commands: Commands,
-    ) {
+    asset_server: Res<AssetServer>,
+) {
     commands.spawn(Camera2dBundle::default());
 
     commands.spawn((
         SpriteBundle {
+            texture: asset_server.load("ship.png"),
             transform: Transform {
                 translation: Vec3::new(0.0, -300.0, 0.0),
                 scale: PADDLE_SIZE,
                 ..default()
             },
-            sprite: Sprite {
-                color: PADDLE_COLOR,
-                ..default()
-            },
             ..default()
         },
         Player {
-            jump_cooldown: Timer::from_seconds(0.66, TimerMode::Once),
+            movement_speed: 1000.0,
             shot_cooldown: Timer::from_seconds(0.5, TimerMode::Once),
             shot_limit: 3,
             position: Vec2::new(1080.0/2.0, (920.0/2.0)-300.0),
@@ -102,40 +103,37 @@ fn setup_game(
     commands.insert_resource(LevelNumber(1));
     commands.insert_resource(EnemiesLeft(2));
     commands.insert_resource(EnemySpawnTimer(Timer::from_seconds(5.0, TimerMode::Repeating)));
+    commands.insert_resource(TimeScale(1.0));
+}
+
+fn update_time_scale(input: Res<Input<MouseButton>>, mut time_scale: ResMut<TimeScale>) {
+    if input.pressed(MouseButton::Right) {
+        time_scale.0 = 0.5;
+    } else {
+        time_scale.0 = 1.0;
+    }
 }
 
 fn move_player(
     time: Res<Time>,
-    keyboard_input: Res<Input<KeyCode>>,
+    mut wheel_input: EventReader<MouseWheel>,
     mut query: Query<(&mut Transform, &mut Player), With<Player>>,
-) {
-    for (mut transform, mut player) in query.iter_mut() {
-        let mut direction = -0.5;
-        transform.translation.x += direction * PLAYER_SPEED * time.delta_seconds();
-        if player.jump_cooldown.finished() {
-            if keyboard_input.pressed(KeyCode::Key1) && !keyboard_input.just_released(KeyCode::Key1)
-            {
-                direction = 30.0;
-                transform.translation.x += direction * PLAYER_SPEED * time.delta_seconds();
-                player.jump_cooldown.reset();
-            }
-            if keyboard_input.pressed(KeyCode::Key2) && !keyboard_input.just_released(KeyCode::Key2)
-            {
-                direction = 60.0;
-                transform.translation.x += direction * PLAYER_SPEED * time.delta_seconds();
-                player.jump_cooldown.reset();
-            }
-            if keyboard_input.pressed(KeyCode::Key3) && !keyboard_input.just_released(KeyCode::Key3)
-            {
-                direction = 90.0;
-                transform.translation.x += direction * PLAYER_SPEED * time.delta_seconds();
-                player.jump_cooldown.reset();
+    windows: Query<&Window>,
+    time_scale: ResMut<TimeScale>
+)
+    {
+        let window = windows.single();
+        let half_width = window.width() / 2.0;
+        for (mut transform, mut player) in query.iter_mut() {
+            for event in wheel_input.read() {
+                let direction = event.y;
+                if !(transform.translation.x < -half_width || transform.translation.x > half_width) {
+                    transform.translation.x += direction * player.movement_speed * time.delta_seconds() * time_scale.0;
+                }
+                player.position = Vec2::new(transform.translation.x, transform.translation.y);
             }
         }
-        player.position = Vec2::new(transform.translation.x, transform.translation.y);
-        player.jump_cooldown.tick(time.delta());
     }
-}
 
 fn update_cursor_position(
     cursor_events: Res<Events<CursorMoved>>,
@@ -158,17 +156,20 @@ fn spawn_projectile(
     mut query: Query<(&mut Transform, &mut Player), With<Player>>,
 ) {
     let cursor_position = last_cursor_position.0;
-    let direction: Vec2 = cursor_position - query.single_mut().1.position;
-    let direction = direction.normalize().extend(0.0);
+
     for (transform, mut player) in query.iter_mut() {
         if player.shot_cooldown.finished() && player.shot_limit != 0 {
             if key_input.pressed(MouseButton::Left) && !key_input.just_released(MouseButton::Left){
+                let direction: Vec2 = cursor_position - player.position;
+                let direction = direction.normalize().extend(0.0);
                 let player_top = transform.translation.y + PADDLE_SIZE.y / 2.0;
+                let rotation = Quat::from_rotation_z(direction.y.atan2(direction.x) + 90.0);
                 commands.spawn((
                     SpriteBundle {
                         transform: Transform {
                             translation: Vec3::new(transform.translation.x, player_top, 0.0),
                             scale: BULLET_SIZE,
+                            rotation: rotation,
                             ..default()
                         },
                         sprite: Sprite {
@@ -191,17 +192,18 @@ fn spawn_projectile(
 
 fn move_bullets(
     windows: Query<&Window>,
-    time: Res<Time>, 
-    mut query: Query<(Entity, &mut Transform, &mut Velocity), With<Bullet>>,
     mut q_player: Query<&mut Player>,
+    time: Res<Time>, 
+    mut q_bullets: Query<(Entity, &mut Transform, &mut Velocity), With<Bullet>>,
     mut commands: Commands,
+    time_scale: ResMut<TimeScale>
 ) {
     let window = windows.single();
     let half_width = window.width() / 2.0;
     let half_height = window.height() / 2.0;
 
-    for (entity, mut transform, velocity) in query.iter_mut() {
-        transform.translation += velocity.0 * BULLET_SPEED * time.delta_seconds(); 
+    for (entity, mut transform, velocity) in q_bullets.iter_mut() {
+        transform.translation += velocity.0 * BULLET_SPEED * time.delta_seconds() * time_scale.0; 
         if transform.translation.x < -half_width 
             || transform.translation.x > half_width 
             || transform.translation.y < -half_height 
@@ -256,7 +258,7 @@ fn spawn_enemies(
                     },
                     ..default()
                 },
-                Enemy{direction: direction, health: 1},
+                Enemy{movement_speed: 75.0, direction: direction, health: 1},
                 Collider,
             ));
             enemy_spawn_timer.0.reset();
@@ -270,6 +272,7 @@ fn spawn_enemies(
 fn move_enemies(
     time: Res<Time>,
     mut q_enemies: Query<(&mut Transform, &mut Enemy), With<Enemy>>,
+    time_scale: ResMut<TimeScale>
 ) {
     for (mut transform, enemy) in q_enemies.iter_mut() {
         let displacement;
@@ -287,7 +290,7 @@ fn move_enemies(
                 0.0,
             );
         }
-        transform.translation += displacement * ENEMY_SPEED * time.delta_seconds();
+        transform.translation += displacement * enemy.movement_speed * time.delta_seconds() * time_scale.0;
     }
 }
 
