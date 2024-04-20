@@ -11,10 +11,9 @@
 - Right click = slow down time
 
 # TODO
-- Colliders for everything
+- Need to add main menu for last collider
 - UI and score system
 - Simple start/game over screen
-- NEED to reorganise my files (not keeping everything in main.rs lol)
 
 # COPYRIGHT
 i literally don't care, use my code
