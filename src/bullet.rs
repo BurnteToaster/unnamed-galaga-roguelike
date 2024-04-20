@@ -1,23 +1,20 @@
 use bevy::prelude::*;
-use crate::TimeScale;
+use crate::LevelInfo;
 
 #[derive(Component)]
 pub struct Bullet {
     pub direction: Vec3,
 }
 
-#[derive(Component)]
-pub struct Collider;
-
 const BULLET_SPEED: f32 = 500.0;
 
 pub fn move_bullets(
     time: Res<Time>, 
     mut q_bullets: Query<(&mut Bullet, &mut Transform), With<Bullet>>,
-    time_scale: Res<TimeScale>,
+    level_info: Res<LevelInfo>,
 ) {
     for (bullet, mut transform) in q_bullets.iter_mut() {
-        transform.translation += BULLET_SPEED * time.delta_seconds() * time_scale.0 * bullet.direction;
+        transform.translation += BULLET_SPEED * time.delta_seconds() * level_info.time_scale * bullet.direction;
     }
 }
 

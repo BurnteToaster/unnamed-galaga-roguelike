@@ -1,15 +1,20 @@
+extern crate rand;
+extern crate bevy;
+
 mod player;
 mod enemy;
 mod bullet;
 
-use player::{Player, move_player, spawn_projectile};
-use enemy::{spawn_enemies, move_enemies, enemy_collision_bullet};
-use bullet::{move_bullets, despawn_projectile};
-use bevy::render::camera::Camera;
-use bevy::prelude::*;
-use bevy::ecs::event::ManualEventReader;
+use bevy::render::settings::{Backends, RenderCreation, WgpuSettings};
 use bevy::render::RenderPlugin;
-use bevy::render::settings::{RenderCreation, WgpuSettings, Backends};
+use player::{Player, move_player, spawn_projectile};
+use enemy::{bullet_enemy_collision_system, move_enemies, Enemy};
+use bullet::{move_bullets, despawn_projectile};
+
+use bevy::prelude::*;
+use bevy::render::camera::Camera;
+use bevy::ecs::event::ManualEventReader;
+use rand::Rng;
 
 fn main() {
     App::new()
@@ -17,7 +22,8 @@ fn main() {
             render_creation: RenderCreation::Automatic(WgpuSettings {
                 backends:Some(Backends::DX12),
                 ..default()
-                   })
+                   }),
+            synchronous_pipeline_compilation: false,
         }))
         .add_systems(Startup, setup_game)
         .add_systems(Update, move_player)
@@ -29,34 +35,50 @@ fn main() {
         .add_systems(Update, move_enemies)
         .add_systems(Update, update_time_scale)
         .add_systems(Update, despawn_projectile)
-        .add_systems(Update, enemy_collision_bullet)
-        .insert_resource(LastCursorPosition(Vec2::new(0.0, 0.0)))
-        .insert_resource(LevelNumber(1))
-        .insert_resource(EnemiesLeft(2))
-        .insert_resource(EnemySpawnTimer(Timer::from_seconds(5.0, TimerMode::Repeating)))
-        .insert_resource(TimeScale(1.0))
+        .add_systems(Update, bullet_enemy_collision_system)
         .run();
 }
+
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub enum GameState {
+    Menu,
+    Playing,
+}
+
+#[derive(Resource)]
+struct MenuComponents {
+    container: Camera2dBundle,
+    play_button: Entity,
+    quit_button: Entity,
+}
+
 
 #[derive(Resource)]
 struct LastCursorPosition(Vec2);
 
-#[derive(Resource)]
-struct LevelNumber(u32);
-
 #[derive(Component)]
 struct Collider; //move to player.rs after main menu
 
-#[derive(Resource)]
-struct EnemiesLeft(u32);
+#[derive(Default, Resource)]
+pub struct EnemiesLeft {
+    prev: u32,
+    curr: u32,
+    next: u32,
+}
 
-#[derive(Resource)]
-struct EnemySpawnTimer(Timer);
-
-#[derive(Resource)]
-struct TimeScale(f32);
+#[derive(Default, Resource)]
+pub struct LevelInfo {
+    level_number: u32,
+    total_enemies: u32,
+    enemy_spawn_timer: Timer,
+    enemy_health: u32,
+    time_scale: f32,
+    level_transition_timer: Timer,
+}
 
 const PADDLE_SIZE: Vec3 = Vec3::new(0.15, 0.20, 0.0);
+const ENEMY_SIZE: Vec3 = Vec3::new(35.0,35.0, 0.0);
+const ENEMY_COLOR: Color = Color::rgb(1.0, 0.0, 0.75);
 
 fn setup_game(
     mut commands: Commands,
@@ -82,13 +104,126 @@ fn setup_game(
         },
         Collider,
     ));
+
+    commands.insert_resource(LastCursorPosition(Vec2::new(0.0, -200.0)));
+    commands.insert_resource(EnemiesLeft{prev: 1, curr: 1, next: 2});
+    commands.insert_resource(
+        LevelInfo{
+            level_number: 1, 
+            total_enemies: 1, 
+            enemy_spawn_timer: Timer::from_seconds(1.5, TimerMode::Once),
+            enemy_health: 1,
+            time_scale: 1.0,
+            level_transition_timer: Timer::from_seconds(5.0, TimerMode::Once),
+        });
+
+    commands.spawn(TextBundle {
+        text: Text {
+            sections: Vec::<TextSection>::new(),
+            ..default()
+        },
+        background_color: BackgroundColor(Color::BLACK),
+        ..default()       
+    });
+
+    let button_style = Style {
+        margin: UiRect::new(Val::Px(0.0), Val::Px(10.0), Val::Px(0.0), Val::Px(10.0)),
+        justify_content: JustifyContent::Center,
+        align_items: AlignItems::Center,
+        ..Default::default()
+    };
+
+    let play_button = commands
+        .spawn(ButtonBundle {
+            style: button_style.clone(),
+            ..Default::default()
+        })
+        .with_children(|parent| {
+            parent.spawn(TextBundle {
+                text: Text::from_section(
+                    "Play",
+                    TextStyle {
+                        font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+                        font_size: 40.0,
+                        color: Color::rgb(0.9, 0.9, 0.9),
+                    }
+                ),
+                ..Default::default()
+            });
+        })
+        .id();
+
+    let quit_button = commands
+        .spawn(ButtonBundle {
+            style: button_style.clone(),
+            ..Default::default()
+        })
+        .with_children(|parent| {
+            parent.spawn(TextBundle {
+                text: Text::from_section(
+                    "Quit",
+                    TextStyle {
+                        font: asset_server.load("fonts/FiraSans-Bold.ttf"),
+                        font_size: 40.0,
+                        color: Color::rgb(0.9, 0.9, 0.9),
+                    }
+                ),
+                ..Default::default()
+            });
+        })
+        .id();
+
+    commands.insert_resource(MenuComponents {
+        container: Camera2dBundle::default(),
+        play_button: play_button,
+        quit_button: quit_button,
+    });
 }
 
-fn update_time_scale(input: Res<Input<MouseButton>>, mut time_scale: ResMut<TimeScale>) {
+pub fn spawn_enemies(
+    mut commands: Commands,
+    time: Res<Time>,
+    windows: Query<&Window>,
+    q_player: Query<&Player>,
+    mut level_info: ResMut<LevelInfo>,
+) {
+    let window = windows.single();
+    let buffer = 50.0; // Adjust this value as needed
+    let spawn_width = window.width() - buffer;
+    if level_info.enemy_spawn_timer.finished() && level_info.level_transition_timer.finished() {
+        let mut rng = rand::thread_rng();
+        let initial_x = rng.gen_range(-spawn_width / 2.0..spawn_width / 2.0);
+        let player = q_player.single();
+        let above_player_pos = player.position.extend(0.0) + Vec3::new(0.0, -175.0, 0.0);
+        let direction = (above_player_pos - Vec3::new(initial_x, 500.0, 0.0)).normalize();
+        commands.spawn((
+            SpriteBundle {
+                transform: Transform {
+                    translation: Vec3::new(initial_x, 500.0, 0.0),
+                    scale: ENEMY_SIZE,
+                    ..default()
+                },
+                sprite: Sprite {
+                    color: ENEMY_COLOR,
+                    ..default()
+                },
+                ..default()
+            },
+            Enemy{movement_speed: 75.0, direction: direction, health: level_info.enemy_health},
+            Collider,
+        ));
+        level_info.enemy_spawn_timer.reset();
+    } 
+    else {
+        level_info.enemy_spawn_timer.tick(time.delta());
+    }
+}
+
+fn update_time_scale(input: Res<ButtonInput<MouseButton>>, mut level_info: ResMut<LevelInfo> ) {
     if input.pressed(MouseButton::Right) {
-        time_scale.0 = 0.5;
+        level_info.time_scale = 0.5;
     } else {
-        time_scale.0 = 1.0;
+        level_info.time_scale = 1.0;
     }
 }
 
@@ -106,18 +241,31 @@ fn update_cursor_position(
 }
 
 fn update_level_info(
-    mut level_number: ResMut<LevelNumber>,
+    time: Res<Time>,
+    mut level_info: ResMut<LevelInfo>,
     mut enemies_left: ResMut<EnemiesLeft>,
 ) {
-    if enemies_left.0 == 0 {
-        let prev_enemies_left = enemies_left.0;
-        level_number.0 += 1;
-        enemies_left.0 = (prev_enemies_left * 2) + 1;
-        println!("Level: {}", level_number.0);
-        println!("Enemies: {}", enemies_left.0);
+    if enemies_left.curr == 0 {
+        level_info.enemy_spawn_timer.pause();
+        if level_info.level_transition_timer.finished() {
+            level_info.level_number += 1;
+            enemies_left.prev = enemies_left.curr;
+            if level_info.level_number % 5 == 0 {
+                level_info.enemy_health += 1;
+                enemies_left.next -= 5;
+            }
+            enemies_left.curr = enemies_left.next;
+            enemies_left.next = enemies_left.curr + enemies_left.prev;
+            level_info.total_enemies = enemies_left.curr;
+
+            println!("Level: {}", level_info.level_number);
+            println!("Enemies: {}", level_info.total_enemies);
+            level_info.enemy_spawn_timer.reset();
+            level_info.enemy_spawn_timer.unpause();
+        }
     }
+    level_info.level_transition_timer.tick(time.delta());
 }
 
-//THEN MAKE THE ENEMIES COLLIDE WITH THE BULLETS
 //THEN MAKE THE PLAYER COLLIDE WITH THE BULLETS
 //THEN ADD A SCORE SYSTEM

@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy::window::Window;
 use bevy::input::mouse::MouseWheel;
-use crate::{bullet::Bullet, TimeScale, LastCursorPosition};
+use crate::{bullet::Bullet, LevelInfo, LastCursorPosition, Collider};
 
 #[derive(Component)]
 pub struct Player {
@@ -12,10 +12,7 @@ pub struct Player {
 }
 
 #[derive(Component)]
-pub struct Collider;
-
-#[derive(Component)]
-pub struct Velocity(Vec3);
+pub struct Velocity;
 
 const PADDLE_SIZE: Vec3 = Vec3::new(0.15, 0.20, 0.0);
 pub const BULLET_SIZE: Vec3 = Vec3::new(25.0, 10.0, 0.0);
@@ -26,7 +23,7 @@ pub fn move_player(
     mut wheel_input: EventReader<MouseWheel>,
     mut query: Query<(&mut Transform, &mut Player), With<Player>>,
     windows: Query<&Window>,
-    time_scale: Res<TimeScale>
+    level_info: Res<LevelInfo>
 )
     {   
         let window = windows.single();
@@ -35,7 +32,7 @@ pub fn move_player(
             for event in wheel_input.read() {
                 let direction = event.y;
                 if !(transform.translation.x < -half_width || transform.translation.x > half_width) {
-                    transform.translation.x += direction * player.movement_speed * time.delta_seconds() * time_scale.0;
+                    transform.translation.x += direction * player.movement_speed * time.delta_seconds() * level_info.time_scale;
                 }
                 player.position = Vec2::new(transform.translation.x, transform.translation.y);
             }
@@ -46,7 +43,7 @@ pub fn move_player(
 pub fn spawn_projectile(
     last_cursor_position: Res<LastCursorPosition>,
     time: Res<Time>,
-    key_input: Res<Input<MouseButton>>,
+    key_input: Res<ButtonInput<MouseButton>>,
     mut commands: Commands,
     mut query: Query<(&mut Transform, &mut Player), With<Player>>,
 ) {

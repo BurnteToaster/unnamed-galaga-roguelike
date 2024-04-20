@@ -1,66 +1,17 @@
-use bevy::{prelude::*, sprite::collide_aabb::collide};
-use rand::Rng;
-use crate::{bullet::Bullet, player::{Player, BULLET_SIZE}, EnemiesLeft, EnemySpawnTimer, TimeScale};
+use bevy::{math::bounding::{Aabb2d, IntersectsVolume}, prelude::*};
+use crate::{bullet::Bullet, player::BULLET_SIZE, ENEMY_SIZE, LevelInfo, EnemiesLeft, Collider};
 
 #[derive(Component)]
 pub struct Enemy {
-    movement_speed: f32,
-    direction: Vec3,
-    health: i32,
-}
-
-#[derive(Component)]
-pub struct Collider;
-
-const ENEMY_SIZE: Vec3 = Vec3::new(35.0,35.0, 0.0);
-const ENEMY_COLOR: Color = Color::rgb(1.0, 0.0, 0.75);
-
-pub fn spawn_enemies(
-    mut commands: Commands,
-    time: Res<Time>,
-    enemies_left: Res<EnemiesLeft>,
-    mut enemy_spawn_timer: ResMut<EnemySpawnTimer>,
-    windows: Query<&Window>,
-    q_player: Query<&Player>,
-) {
-    let window = windows.single();
-    let buffer = 50.0; // Adjust this value as needed
-    let spawn_width = window.width() - buffer;
-    for _ in 0..enemies_left.0 {
-        if enemy_spawn_timer.0.finished() {
-            let mut rng = rand::thread_rng();
-            let initial_x = rng.gen_range(-spawn_width / 2.0..spawn_width / 2.0);
-            let player = q_player.single();
-            let player_pos = player.position.extend(0.0);
-            let direction = (player_pos - Vec3::new(initial_x, 500.0, 0.0)).normalize();
-            commands.spawn((
-                SpriteBundle {
-                    transform: Transform {
-                        translation: Vec3::new(initial_x, 500.0, 0.0),
-                        scale: ENEMY_SIZE,
-                        ..default()
-                    },
-                    sprite: Sprite {
-                        color: ENEMY_COLOR,
-                        ..default()
-                    },
-                    ..default()
-                },
-                Enemy{movement_speed: 75.0, direction: direction, health: 1},
-                Collider,
-            ));
-            enemy_spawn_timer.0.reset();
-        } 
-        else {
-            enemy_spawn_timer.0.tick(time.delta());
-        }
-    } 
+    pub movement_speed: f32,
+    pub direction: Vec3,
+    pub health: u32,
 }
 
 pub fn move_enemies(
     time: Res<Time>,
     mut q_enemies: Query<(&mut Transform, &mut Enemy), With<Enemy>>,
-    time_scale: Res<TimeScale>
+    level_info: Res<LevelInfo>,
 ) {
     for (mut transform, enemy) in q_enemies.iter_mut() {
         let displacement;
@@ -78,28 +29,34 @@ pub fn move_enemies(
                 0.0,
             );
         }
-        transform.translation += displacement * enemy.movement_speed * time.delta_seconds() * time_scale.0;
+        transform.translation += displacement * enemy.movement_speed * time.delta_seconds() * level_info.time_scale;
     }
 }
 
-//THEN MAKE THE ENEMIES COLLIDE WITH THE BULLETS
-pub fn enemy_collision_bullet(
+pub fn bullet_enemy_collision_system(
     mut commands: Commands,
-    q_bullets: Query<(Entity, &Transform), With<Bullet>>,
-    q_collider: Query<(Entity, &Transform, Option<&Enemy>), With<Collider>>,
+    bullet_query: Query<(Entity, &Transform), With<Bullet>>,
+    mut enemy_query: Query<(&mut Enemy, Entity, &Transform), With<Collider>>,
+    mut enemies_left: ResMut<EnemiesLeft>,
 ) {
-    for (bullet_entity, bullet_transform) in &q_bullets {
-        for (enemy_entity, enemy_transform, enemy) in &q_collider {
-            let collision = collide(
-                bullet_transform.translation,
-                BULLET_SIZE.truncate(),
-                enemy_transform.translation,
-                ENEMY_SIZE.truncate(),
+    for (bullet_entity, bullet_transform) in bullet_query.iter() {
+        for (mut enemy, enemy_entity, enemy_transform) in enemy_query.iter_mut() {
+            let collision = Aabb2d::new(
+                bullet_transform.translation.xy(),
+                BULLET_SIZE.xy()).intersects(
+                &Aabb2d::new(
+                    enemy_transform.translation.xy(),
+                    ENEMY_SIZE.xy()
+                )
             );
-            if let Some(_) = collision {
-                if enemy.is_some() {
-                    commands.entity(bullet_entity).despawn();
-                    commands.entity(enemy_entity).despawn();
+            
+            if collision {
+                commands.entity(bullet_entity).despawn(); // despawn the bullet
+                enemy.health -= 1; // damage the enemy
+
+                if enemy.health <= 0 {
+                    commands.entity(enemy_entity).despawn(); // despawn the enemy
+                    enemies_left.curr -= 1;
                 }
             }
         }
