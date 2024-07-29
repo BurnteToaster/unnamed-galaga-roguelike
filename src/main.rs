@@ -16,6 +16,13 @@ use bevy::render::camera::Camera;
 use bevy::ecs::event::ManualEventReader;
 use rand::Rng;
 
+#[derive(Clone, Copy, Default, Eq, PartialEq, Debug, Hash, States)]
+enum GameState {
+    Menu,
+    #[default]
+    Game,
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(RenderPlugin {
@@ -25,7 +32,9 @@ fn main() {
                    }),
             synchronous_pipeline_compilation: false,
         }))
+        .init_state::<GameState>()
         .add_systems(Startup, setup_game)
+        .add_systems(Update, display_ui)
         .add_systems(Update, move_player)
         .add_systems(Update, spawn_projectile)
         .add_systems(Update, move_bullets)
@@ -36,22 +45,9 @@ fn main() {
         .add_systems(Update, update_time_scale)
         .add_systems(Update, despawn_projectile)
         .add_systems(Update, bullet_enemy_collision_system)
+        //.add_systems(Update, update_ui)
         .run();
 }
-
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub enum GameState {
-    Menu,
-    Playing,
-}
-
-#[derive(Resource)]
-struct MenuComponents {
-    container: Camera2dBundle,
-    play_button: Entity,
-    quit_button: Entity,
-}
-
 
 #[derive(Resource)]
 struct LastCursorPosition(Vec2);
@@ -59,14 +55,14 @@ struct LastCursorPosition(Vec2);
 #[derive(Component)]
 struct Collider; //move to player.rs after main menu
 
-#[derive(Default, Resource)]
+#[derive(Resource)]
 pub struct EnemiesLeft {
     prev: u32,
     curr: u32,
     next: u32,
 }
 
-#[derive(Default, Resource)]
+#[derive(Resource)]
 pub struct LevelInfo {
     level_number: u32,
     total_enemies: u32,
@@ -111,72 +107,53 @@ fn setup_game(
         LevelInfo{
             level_number: 1, 
             total_enemies: 1, 
-            enemy_spawn_timer: Timer::from_seconds(1.5, TimerMode::Once),
+            enemy_spawn_timer: Timer::from_seconds(1.0, TimerMode::Once),
             enemy_health: 1,
             time_scale: 1.0,
-            level_transition_timer: Timer::from_seconds(5.0, TimerMode::Once),
-        });
+            level_transition_timer: Timer::from_seconds(3.0, TimerMode::Once),
+        }
+    );
+}
 
+pub fn display_ui(
+    mut commands: Commands,
+    level_info: Res<LevelInfo>,
+) {
+    
+    let mut level = format!("Level: {}\n", level_info.level_number);
+    let mut enemies = format!("Enemies: {}\n", level_info.total_enemies);
+    let mut timescale = format!("Timescale: {}\n", level_info.time_scale);
     commands.spawn(TextBundle {
         text: Text {
-            sections: Vec::<TextSection>::new(),
-            ..default()
+            sections: vec![
+                TextSection {
+                    value: level,
+                    style: TextStyle {
+                        font_size: 30.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                },
+                TextSection {
+                    value: enemies,
+                    style: TextStyle {
+                        font_size: 30.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                },
+                TextSection {
+                    value: timescale,
+                    style: TextStyle {
+                        font_size: 30.0,
+                        color: Color::WHITE,
+                        ..default()
+                    },
+                },
+            ],
+            ..Default::default()
         },
-        background_color: BackgroundColor(Color::BLACK),
-        ..default()       
-    });
-
-    let button_style = Style {
-        margin: UiRect::new(Val::Px(0.0), Val::Px(10.0), Val::Px(0.0), Val::Px(10.0)),
-        justify_content: JustifyContent::Center,
-        align_items: AlignItems::Center,
         ..Default::default()
-    };
-
-    let play_button = commands
-        .spawn(ButtonBundle {
-            style: button_style.clone(),
-            ..Default::default()
-        })
-        .with_children(|parent| {
-            parent.spawn(TextBundle {
-                text: Text::from_section(
-                    "Play",
-                    TextStyle {
-                        font: asset_server.load("fonts/FiraSans-Bold.ttf"),
-                        font_size: 40.0,
-                        color: Color::rgb(0.9, 0.9, 0.9),
-                    }
-                ),
-                ..Default::default()
-            });
-        })
-        .id();
-
-    let quit_button = commands
-        .spawn(ButtonBundle {
-            style: button_style.clone(),
-            ..Default::default()
-        })
-        .with_children(|parent| {
-            parent.spawn(TextBundle {
-                text: Text::from_section(
-                    "Quit",
-                    TextStyle {
-                        font: asset_server.load("fonts/FiraSans-Bold.ttf"),
-                        font_size: 40.0,
-                        color: Color::rgb(0.9, 0.9, 0.9),
-                    }
-                ),
-                ..Default::default()
-            });
-        })
-        .id();
-
-    commands.insert_resource(MenuComponents {
-        container: Camera2dBundle::default(),
-        play_button: play_button,
-        quit_button: quit_button,
     });
 }
 
@@ -241,15 +218,17 @@ fn update_cursor_position(
 }
 
 fn update_level_info(
+    mut commands: Commands,
     time: Res<Time>,
     mut level_info: ResMut<LevelInfo>,
     mut enemies_left: ResMut<EnemiesLeft>,
+    q_enemies: Query<(&mut Enemy, Entity)>,
 ) {
     if enemies_left.curr == 0 {
         level_info.enemy_spawn_timer.pause();
         if level_info.level_transition_timer.finished() {
             level_info.level_number += 1;
-            enemies_left.prev = enemies_left.curr;
+            enemies_left.prev = level_info.total_enemies;
             if level_info.level_number % 5 == 0 {
                 level_info.enemy_health += 1;
                 enemies_left.next -= 5;
@@ -266,6 +245,16 @@ fn update_level_info(
     }
     level_info.level_transition_timer.tick(time.delta());
 }
+
+/*fn update_ui(
+    mut q_ui: Query<(&UI, &mut Text)>,
+) {
+    for (ui, mut text) in q_ui.iter_mut() {
+        text.sections[0].value = format!("Level: {}\n", ui.Level);
+        text.sections[1].value = format!("Enemies: {}\n", ui.Enemies);
+        text.sections[2].value = format!("Timescale: {}\n", ui.TimeScale);
+    }
+}*/
 
 //THEN MAKE THE PLAYER COLLIDE WITH THE BULLETS
 //THEN ADD A SCORE SYSTEM

@@ -1,3 +1,5 @@
+extern crate bevy;
+
 use bevy::prelude::*;
 use bevy::window::Window;
 use bevy::input::mouse::MouseWheel;

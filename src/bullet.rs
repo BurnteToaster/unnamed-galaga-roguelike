@@ -1,3 +1,4 @@
+extern crate bevy;
 use bevy::prelude::*;
 use crate::LevelInfo;
 

@@ -1,3 +1,4 @@
+extern crate bevy;
 use bevy::{math::bounding::{Aabb2d, IntersectsVolume}, prelude::*};
 use crate::{bullet::Bullet, player::BULLET_SIZE, ENEMY_SIZE, LevelInfo, EnemiesLeft, Collider};
 
